@@ -1,0 +1,8 @@
+# Minimal deps for the API-backed serving deployment (query encoding via the Jina API,
+# so NO torch / transformers / sentence-transformers needed on the serving box).
+faiss-cpu>=1.8,<2
+numpy>=1.26,<3
+pandas>=2.2,<3
+pyarrow>=17
+requests>=2.32,<3
+streamlit>=1.44,<2
