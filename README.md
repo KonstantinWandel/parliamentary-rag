@@ -14,8 +14,10 @@ most similar speeches back, ranked, with speaker, party, date and the passage �
 - **Embeddings:** speeches are encoded with [`jinaai/jina-embeddings-v4`](https://huggingface.co/jinaai/jina-embeddings-v4)
   (multilingual, 2048-d, up to 32k-token context — so full speeches, not truncated) into a shared
   cross-lingual space (`task=retrieval`, passage adapter, L2-normalized).
-- **Index:** a **FAISS IVF-PQ** index (inner product = cosine on the normalized vectors) — ~60 MB
-  for ~1M German speeches, so retrieval runs on CPU with a tiny memory footprint.
+- **Index:** a **FAISS flat SQ8** index (8-bit scalar quantization; inner product = cosine on the
+  normalized vectors) — **near-exact** (recall@10 ≈ 1.0 vs a brute-force baseline), ~2 GB per ~1M German
+  speeches, ~150 ms/query on CPU (negligible next to the query-embedding call). (An IVF-PQ build is
+  ~30× smaller but far too lossy on these 2048-d vectors — recall@10 ≈ 0.32 — so SQ8 is the default.)
 - **Query encoding — two backends** (`PARLIAMENT_EMBED_BACKEND`):
   - **`api`** (default when `JINA_API_KEY` is set): encodes the query via the
     [Jina embeddings API](https://jina.ai/embeddings/) (`task=retrieval.query`). **No local model,
@@ -35,7 +37,7 @@ separately (they are large and/or license-bound):
   ```bash
   # produces data/de_metadata.parquet + data/indexes/de_ivfpq.faiss (row-aligned)
   python tools/build_metadata_parquet.py --data-dir /path/with/DE_Master_Chunks.csv --corpus DE
-  python tools/build_ivfpq_indexes.py   --data-dir /path/with/embeddings_jina_v4 --corpus DE
+  python tools/build_sq8_indexes.py      --data-dir /path/with/embeddings_jina_v4 --corpus DE  # near-exact, ~2 GB
   ```
 
 ## Run it
