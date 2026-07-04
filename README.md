@@ -42,15 +42,25 @@ separately (they are large and/or license-bound):
 
 ## Run it
 
+**Web app (FastAPI + React) — the deployed version, matching the sibling SOEP/INKAR finders.**
 ```bash
-cp .env.example .env          # put your JINA_API_KEY in it (query-side only; never commit .env)
+cp .env.example .env                      # put your JINA_API_KEY in it (never commit .env)
+# backend (retrieval API)
+pip install -r backend/requirements.txt
+cd backend && PARLIAMENT_DATA_DIR=../data uvicorn main:app --port 18004
+# frontend (separate shell)
+cd frontend && npm install && VITE_API_URL=http://localhost:18004/api npm run dev
+```
+In production: `uvicorn main:app` behind a reverse proxy that routes `/api/*` to the backend and serves
+the static `frontend/` build at `/` (a Caddy `germaparl` vhost reusing the wildcard cert — same pattern
+as the SOEP/INKAR finders).
+
+**Streamlit (single-file, portable) — the simple/offline alternative.**
+```bash
 pip install -r requirements-api.txt
 PORTABLE_PARLIAMENT_DATA_DIR=./data streamlit run app.py
 ```
-
-- **Server (subdomain) deployment:** see `deploy/systemd/germaparl-finder.service` (Streamlit on
-  127.0.0.1:18003) + `deploy/Caddyfile.snippet` (reverse-proxy a subdomain, reusing an existing cert).
-- **Laptop / on-prem:** `deploy/run_local.sh`, or the macOS double-click launcher `deploy/run_peer_app.command`.
+Or the macOS double-click launcher `deploy/run_peer_app.command`.
 
 ## Citing
 

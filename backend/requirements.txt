@@ -1,0 +1,8 @@
+# FastAPI retrieval backend (query encoding via the Jina API — no torch/transformers).
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+faiss-cpu>=1.8,<2
+numpy>=1.26,<3
+pandas>=2.2,<3
+pyarrow>=17
+requests>=2.32,<3
