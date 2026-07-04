@@ -1,0 +1,6 @@
+# Serve the finder as a subdomain alongside the SOEP/INKAR finders (same wildcard cert).
+# Add to /etc/caddy/Caddyfile, then: systemctl reload caddy
+germaparl.geolab.soz.uni-bielefeld.de {
+    import appsite
+    reverse_proxy 127.0.0.1:18003
+}

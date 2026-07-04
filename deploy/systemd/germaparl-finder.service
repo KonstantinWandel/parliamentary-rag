@@ -1,0 +1,20 @@
+[Unit]
+Description=GermaParl Speech Finder (Streamlit, retrieval-only, Jina API queries)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=geolab
+Group=geolab
+WorkingDirectory=/opt/geolab/parliamentary
+# parliamentary.env holds JINA_API_KEY (chmod 600, NOT in git)
+EnvironmentFile=/opt/geolab/parliamentary/parliamentary.env
+Environment=PORTABLE_PARLIAMENT_DATA_DIR=/opt/geolab/parliamentary/data
+Environment=HF_HOME=/opt/geolab/parliamentary/.cache
+ExecStart=/opt/geolab/parliamentary/.venv/bin/streamlit run /opt/geolab/parliamentary/app.py --server.port 18003 --server.address 127.0.0.1 --server.headless true --server.enableCORS false --server.enableXsrfProtection false --browser.gatherUsageStats false
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

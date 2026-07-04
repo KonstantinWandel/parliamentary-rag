@@ -1,0 +1,41 @@
+# --- Secrets (NEVER commit) ---
+.env
+.env.*
+!.env.example
+**/.auth.env
+.last_*
+*.pid
+
+# --- Corpora, embeddings & generated artifacts (license-bound or huge) ---
+# Regenerate embeddings with embed_v3_generate.py; ship/share data separately.
+data/
+embeddings_jina_v4/
+embedding_checkpoints_jina_v4/
+**/indexes/
+**/*.npy
+**/*.faiss
+**/*.parquet
+Master_Chunks.csv
+DE_Master_Chunks.csv
+*.csv
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.cache/
+.ipynb_checkpoints/
+.venv/
+
+# --- Frontend / Docker bundle caches ---
+node_modules/
+dist/
+cache/
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/

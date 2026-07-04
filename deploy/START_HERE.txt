@@ -1,0 +1,23 @@
+PORTABLE PARLIAMENTARY RAG
+
+What your colleague needs:
+- Docker Desktop
+
+This app is retrieval-only: it returns the speeches most similar to your query,
+ranked by Jina v4 semantic similarity. There is no language model and no generated
+summary - you read the original passages yourself. Nothing extra to install.
+
+How to run on macOS:
+1. Install Docker Desktop.
+2. Double-click `run_peer_app.command`.
+3. Open http://localhost:8501
+
+How to run on Windows:
+1. Install Docker Desktop.
+2. Double-click `run_peer_app.bat`.
+3. Open http://localhost:8501
+
+Notes:
+- The bundle already contains the metadata and ANN indexes.
+- Pick a corpus and year range in the sidebar, then search.
+- The full README has troubleshooting details.
