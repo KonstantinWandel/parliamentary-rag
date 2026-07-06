@@ -12,7 +12,7 @@ import faiss
 import numpy as np
 import pandas as pd
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -51,18 +51,35 @@ def _load():
     _index, _df = idx, df
 
 
-def _encode(query: str) -> np.ndarray:
-    resp = requests.post(
-        JINA_API_URL, timeout=30,
-        headers={"Authorization": f"Bearer {JINA_API_KEY}", "Content-Type": "application/json"},
-        json={"model": JINA_API_MODEL, "task": "retrieval.query", "input": [{"text": query}]},
-    )
-    resp.raise_for_status()
-    v = np.asarray(resp.json()["data"][0]["embedding"], dtype=np.float32)
-    n = float(np.linalg.norm(v))
-    if n > 0:
-        v = v / n  # match the L2-normalized docs / inner-product index
-    return v.reshape(1, -1)
+def _encode(query: str, retries: int = 3) -> np.ndarray:
+    # The Jina API occasionally has slow/timeout hiccups (esp. on the free tier). Retry
+    # transient failures (network timeout / 5xx) with a short backoff; let 4xx (auth/quota)
+    # raise immediately. `search` converts any final failure to a clean 503, not a 500.
+    last_err = None
+    for attempt in range(retries):
+        try:
+            resp = requests.post(
+                JINA_API_URL, timeout=(10, 45),
+                headers={"Authorization": f"Bearer {JINA_API_KEY}", "Content-Type": "application/json"},
+                json={"model": JINA_API_MODEL, "task": "retrieval.query", "input": [{"text": query}]},
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+            continue
+        if resp.status_code >= 500:  # transient server-side → retry
+            last_err = f"Jina API {resp.status_code}"
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+            continue
+        resp.raise_for_status()  # 4xx (auth/quota) → propagate immediately
+        v = np.asarray(resp.json()["data"][0]["embedding"], dtype=np.float32)
+        n = float(np.linalg.norm(v))
+        if n > 0:
+            v = v / n  # match the L2-normalized docs / inner-product index
+        return v.reshape(1, -1)
+    raise RuntimeError(f"Jina embedding API failed after {retries} attempts: {last_err}")
 
 
 class SearchReq(BaseModel):
@@ -94,7 +111,13 @@ def search(req: SearchReq):
     q = (req.query or "").strip()
     if not q:
         return {"results": [], "took_ms": 0, "query": q, "total": 0}
-    qv = _encode(q)
+    try:
+        qv = _encode(q)
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Die Suche ist momentan nicht erreichbar (Embedding-Dienst). Bitte in einem Moment erneut versuchen.",
+        )
     k = max(1, min(int(req.top_k or 10), 50))
     ys, ye = req.year_start, req.year_end
     filtered = ys is not None or ye is not None
