@@ -95,7 +95,11 @@ export default function App() {
           year_end: yearTo ? Number(yearTo) : null,
         }),
       })
-      if (!res.ok) throw new Error(`Suche fehlgeschlagen (${res.status})`)
+      if (!res.ok) {
+        let msg = `Suche fehlgeschlagen (${res.status})`
+        try { const j = await res.json(); if (j && j.detail) msg = j.detail } catch { /* keep default */ }
+        throw new Error(msg)
+      }
       const data = await res.json()
       setResults(data.results)
       setTook(data.took_ms)
