@@ -74,3 +74,11 @@ If you use this software, please cite it via the archived release — see `CITAT
 
 [MIT](LICENSE) © 2026 Konstantin Wandel. Built at Universität Bielefeld. Uses the Jina v4 embeddings
 (model © Jina AI) and GermaParl data under its own terms.
+
+## What the public deployment serves
+
+`PARLIAMENT_CORPORA` is an allowlist, and the public deployment sets it to `germaparl`. Any other
+corpus is refused with a 404 at every endpoint, even if its index files are present on the host.
+This is deliberate: **RegioPress is licensed material (Genios) and must never be exposed publicly.**
+It is run locally only, and its data has no place on a public host.
+

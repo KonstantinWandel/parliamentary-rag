@@ -15,10 +15,13 @@ repository-code: "https://github.com/KonstantinWandel/parliamentary-rag"
 doi: "10.5281/zenodo.21194707"
 identifiers:
   - type: doi
+    value: "10.5281/zenodo.22163218"
+    description: "Archived release v0.2.1 (2026-08-29)"
+  - type: doi
     value: "10.5281/zenodo.21194708"
     description: "Archived release v0.1.0 (2026-07-04)"
 license: MIT
-version: 0.2.0
+version: 0.2.1
 date-released: "2026-08-29"
 keywords:
   - parliamentary debates
