@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "Parliamentary Speech Finder (UK + DE): multilingual semantic search over Hansard and GermaParl"
+title: "Parliamentary Speech Finder: semantic search over German Bundestag speeches (GermaParl)"
 message: "If you use this software, please cite it using these metadata."
 type: software
 authors:
@@ -18,20 +18,16 @@ identifiers:
     value: "10.5281/zenodo.21194708"
     description: "Archived release v0.1.0 (2026-07-04)"
 license: MIT
-version: 0.1.0
-date-released: "2026-05-27"
+version: 0.2.0
+date-released: "2026-08-29"
 keywords:
   - parliamentary debates
   - semantic search
   - retrieval
   - jina-embeddings-v4
   - GermaParl
-  - Hansard
-  - multilingual
+  - Bundestag
 references:
   - type: data
     title: "GermaParl (PolMine project)"
     notes: "German Bundestag plenary protocols corpus; cite per PolMine/CLARIN terms."
-  - type: data
-    title: "UK House of Commons Hansard"
-    notes: "Used under the Open Parliament Licence."

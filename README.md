@@ -1,9 +1,10 @@
-# Parliamentary Speech Finder (GermaParl / Hansard)
+# Parliamentary Speech Finder (GermaParl)
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21194707.svg)](https://doi.org/10.5281/zenodo.21194707)
 
-Semantic search over **parliamentary speeches** — the German Bundestag (GermaParl, 1949–2025)
-and, optionally, the UK House of Commons (Hansard). You ask in plain language
+Semantic search over **parliamentary speeches** of the German Bundestag (GermaParl, 1949–2025).
+The public deployment serves GermaParl only; other corpora the code supports are licensed
+material and are run locally, never published. You ask in plain language
 ("Deutsche Wiedervereinigung", "Klimawandel und Energiepolitik", "Rente mit 63") and get the
 most similar speeches back, ranked, with speaker, party, date and the passage — filterable by year.
 
@@ -34,7 +35,7 @@ This repo is **code only**. The corpora, embeddings and indexes are git-ignored 
 separately (they are large and/or license-bound):
 
 - **GermaParl** (German Bundestag plenary protocols) — from the [PolMine project](https://polmine.github.io/)
-  (Blätte et al.). Cite/observe their terms. **Hansard** (UK) similarly from its source.
+  (Blätte et al.). Cite and observe their terms.
 - Build the deployment artifacts from your embeddings with the scripts in `tools/`:
   ```bash
   # produces data/de_metadata.parquet + data/indexes/de_ivfpq.faiss (row-aligned)
@@ -67,9 +68,9 @@ Or the macOS double-click launcher `deploy/run_peer_app.command`.
 ## Citing
 
 If you use this software, please cite it via the archived release — see `CITATION.cff`
-(a Zenodo DOI is minted per GitHub release). Please also cite the underlying corpora (GermaParl/PolMine, Hansard).
+(a Zenodo DOI is minted per GitHub release). Please also cite the underlying corpus (GermaParl, PolMine).
 
 ## License
 
 [MIT](LICENSE) © 2026 Konstantin Wandel. Built at Universität Bielefeld. Uses the Jina v4 embeddings
-(model © Jina AI) and GermaParl/Hansard data under their respective terms.
+(model © Jina AI) and GermaParl data under its own terms.
