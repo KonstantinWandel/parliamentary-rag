@@ -1,6 +1,6 @@
 {
-  "title": "Parliamentary Speech Finder (UK + DE): multilingual semantic search over Hansard and GermaParl",
-  "description": "A retrieval-only research prototype for multilingual semantic search over parliamentary speeches from the UK House of Commons (Hansard) and the German Bundestag (GermaParl). Speeches are embedded with jina-embeddings-v4 (multilingual, 2048-d, 32k context) into a shared cross-lingual space; queries are encoded with the Jina v4 retrieval adapter and matched via FAISS IVF-PQ with year filtering. It returns similarity-ranked speeches with no model-generated summary. Code only; no corpora or embeddings are included or distributed.",
+  "title": "Parliamentary Speech Finder: semantic search over German Bundestag speeches (GermaParl)",
+  "description": "A retrieval-only research tool for semantic search over the plenary speeches of the German Bundestag (GermaParl, PolMine). Speeches are embedded with jina-embeddings-v4; a query is encoded with the same retrieval adapter and matched against a FAISS index, with year filtering. Results are similarity-ranked original speeches with no model-generated summary, and selected speeches can be exported as individual PDFs. Code only: no corpora and no embeddings are included or distributed. The public deployment serves GermaParl alone; other corpora the code supports are licensed material and are run locally, never published.",
   "upload_type": "software",
   "license": "MIT",
   "creators": [
@@ -16,7 +16,14 @@
     "retrieval",
     "jina-embeddings-v4",
     "GermaParl",
-    "Hansard",
-    "multilingual"
+    "Bundestag"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://polmine.github.io/",
+      "relation": "isDerivedFrom",
+      "resource_type": "dataset",
+      "scheme": "url"
+    }
   ]
 }
