@@ -3,9 +3,9 @@ import { jsPDF } from 'jspdf'
 
 const API = import.meta.env.VITE_API_URL || '/api'
 const CODE_URL = 'https://github.com/KonstantinWandel/parliamentary-rag'
-// Set as soon as a release is archived; until then the footer simply shows no DOI rather
-// than a made-up one.
-const DOI = import.meta.env.VITE_DOI || ''
+// Concept DOI: it resolves to whatever the newest archived release is, so the footer stays
+// correct across releases. The DOI of a single release is in CITATION.cff.
+const DOI = import.meta.env.VITE_DOI || '10.5281/zenodo.21194707'
 
 // The two universities behind the tool and the corpus, the funder, and the project that
 // publishes GermaParl. Monochrome SVGs are drawn as masks so they follow the text colour;
