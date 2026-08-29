@@ -1,5 +1,7 @@
 # Parliamentary Speech Finder (GermaParl / Hansard)
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21194707.svg)](https://doi.org/10.5281/zenodo.21194707)
+
 Semantic search over **parliamentary speeches** — the German Bundestag (GermaParl, 1949–2025)
 and, optionally, the UK House of Commons (Hansard). You ask in plain language
 ("Deutsche Wiedervereinigung", "Klimawandel und Energiepolitik", "Rente mit 63") and get the

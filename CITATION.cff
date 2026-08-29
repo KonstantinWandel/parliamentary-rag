@@ -10,6 +10,13 @@ authors:
     orcid: "https://orcid.org/0009-0007-3321-7774"
 # TODO: if co-released with the GermaParl/PolMine maintainers, add co-authors here.
 repository-code: "https://github.com/KonstantinWandel/parliamentary-rag"
+# Concept DOI: always resolves to the newest archived version. The DOI of the
+# individual release is listed under `identifiers`.
+doi: "10.5281/zenodo.21194707"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21194708"
+    description: "Archived release v0.1.0 (2026-07-04)"
 license: MIT
 version: 0.1.0
 date-released: "2026-05-27"
