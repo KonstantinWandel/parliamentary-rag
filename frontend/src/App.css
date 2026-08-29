@@ -115,8 +115,88 @@ body::before { content: ""; display: block; height: 4px; background: var(--accen
 .foot p { margin: 0 0 6px; }
 .foot .src { color: var(--faint); }
 
+/* Masthead row: brand left, dataset switcher top-right */
+.masthead-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.brand { min-width: 0; }
+.dataset {
+  display: inline-flex; flex-direction: column; gap: 4px; align-items: flex-end;
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); white-space: nowrap;
+}
+.dataset select {
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: #fff;
+  color: var(--ink); font-size: 0.9rem; font-family: inherit; text-transform: none; letter-spacing: normal; max-width: 60vw;
+}
+.dataset select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(47, 93, 80, 0.15); }
+
+/* Neutral tag chip (press ressort) */
+.tag {
+  font-size: 0.74rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+  color: var(--accent); background: #eef3f1; border: 1px solid #dbe6e2;
+}
+
+/* Press headline above the passage */
+.headline {
+  margin: 0 0 6px; font-family: var(--serif); font-weight: 700; font-size: 1.08rem; line-height: 1.35; color: var(--ink);
+}
+.headline mark { background: var(--mark); color: inherit; padding: 0 1px; border-radius: 2px; }
+
 @media (max-width: 640px) {
   .masthead h1 { font-size: 1.7rem; }
+  .masthead-row { flex-direction: column; }
+  .dataset { align-items: flex-start; }
   .qrow { flex-direction: column; }
   .qrow button { width: 100%; }
+}
+
+/* ---- Auswahl und PDF-Export ------------------------------------------------ */
+.picktools {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin: 10px 0 16px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.pickall { display: inline-flex; align-items: center; gap: 7px; font-size: 0.88rem; cursor: pointer; }
+.pickcount { color: var(--muted); font-size: 0.86rem; }
+.picktools .pdfbtn { margin-left: auto; }
+.pdfbtn {
+  padding: 7px 14px; border: 1px solid var(--border); border-radius: 6px;
+  background: #1b3a5c; color: #fff; font-weight: 600; font-size: 0.88rem; cursor: pointer;
+}
+.pdfbtn:disabled { background: #c9ced4; border-color: #c9ced4; cursor: default; }
+.pdfbtn:not(:disabled):hover { filter: brightness(1.12); }
+.card-head .pick { margin: 2px 4px 0 0; flex: 0 0 auto; }
+.card.is-picked { border-color: #1b3a5c; box-shadow: inset 3px 0 0 #1b3a5c; }
+
+/* ---- Zitation und Trägerlogos ---------------------------------------------- */
+.foot .cite { margin-top: 10px; }
+.foot .cite a { color: inherit; }
+
+.brand-strip {
+  display: flex; align-items: center; justify-content: center; gap: 34px; flex-wrap: wrap;
+  max-width: 980px; margin: 0 auto 40px; padding: 16px 16px 0;
+  border-top: 1px solid var(--border);
+}
+.brand-strip a { display: inline-flex; align-items: center; }
+/* Only the monochrome marks are dimmed. The two colour logos carry their own contrast and
+   turned washed out under the same rule. */
+.brand-strip a:has(.brand-mark) { opacity: 0.75; }
+.brand-strip a:has(.brand-mark):hover { opacity: 1; }
+.brand-logo { display: block; width: auto; }
+/* The monochrome marks are masks filled with the page's own ink, so one asset serves any
+   background; the two colour logos are ordinary images. */
+.brand-mark {
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+  -webkit-mask-position: center; mask-position: center;
+  -webkit-mask-size: contain; mask-size: contain;
+}
+.brand-uni { height: 22px; aspect-ratio: 190 / 45;
+  -webkit-mask-image: url('/brand/uni-bielefeld.svg'); mask-image: url('/brand/uni-bielefeld.svg'); }
+.brand-leibniz { height: 28px; aspect-ratio: 120 / 60;
+  -webkit-mask-image: url('/brand/leibniz.svg'); mask-image: url('/brand/leibniz.svg'); }
+.brand-polmine { height: 30px; }
+.brand-ude { height: 38px; }
+
+@media (max-width: 640px) {
+  .brand-strip { gap: 18px; }
+  .picktools .pdfbtn { margin-left: 0; }
 }
