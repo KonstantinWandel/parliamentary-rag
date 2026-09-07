@@ -65,6 +65,11 @@ PORTABLE_PARLIAMENT_DATA_DIR=./data streamlit run app.py
 ```
 Or the macOS double-click launcher `deploy/run_peer_app.command`.
 
+## Author
+
+Konstantin Wandel, research fellow at Universität Bielefeld (SOEP-RegioHub):
+<https://konstantinwandel.github.io/>
+
 ## Citing
 
 If you use this software, please cite it via the archived release — see `CITATION.cff`
