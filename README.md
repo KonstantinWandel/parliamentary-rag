@@ -1,89 +1,111 @@
-# Parliamentary Speech Finder (GermaParl)
+# Plenarsuche
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21194707.svg)](https://doi.org/10.5281/zenodo.21194707)
 
-Semantic search over **parliamentary speeches** of the German Bundestag (GermaParl, 1949–2025).
-The public deployment serves GermaParl only; other corpora the code supports are licensed
-material and are run locally, never published. You ask in plain language
-("Deutsche Wiedervereinigung", "Klimawandel und Energiepolitik", "Rente mit 63") and get the
-most similar speeches back, ranked, with speaker, party, date and the passage — filterable by year.
+Plenarsuche is a web application for semantic search over the plenary speeches of the German Bundestag
+from 1949 to 2025. It works on GermaParl, the corpus of the [PolMine project](https://polmine.github.io/).
+You describe a topic in plain language ("Deutsche Wiedervereinigung", "Klimawandel und Energiepolitik",
+"Rente mit 63") and receive the most similar speeches, ranked, with speaker, party, date and the passage.
+Results can be limited to a range of years, and selected speeches can be downloaded as PDF files, one file
+per speech.
 
-> Status: retrieval-only research prototype. It returns similarity-ranked speeches and **no
-> model-generated summary** — deliberately, to keep it lightweight and dependency-light for
-> external hosting. Verify hits against the official records before use.
+A public instance is running at <https://germaparl.geolab.soz.uni-bielefeld.de>.
+
+> Status: research prototype. The tool returns the original speeches ranked by similarity and generates no
+> summaries or answers. Please check hits against the official records before use.
 
 ## How it works
 
-- **Embeddings:** speeches are encoded with [`jinaai/jina-embeddings-v4`](https://huggingface.co/jinaai/jina-embeddings-v4)
-  (multilingual, 2048-d, up to 32k-token context — so full speeches, not truncated) into a shared
-  cross-lingual space (`task=retrieval`, passage adapter, L2-normalized).
-- **Index:** a **FAISS flat SQ8** index (8-bit scalar quantization; inner product = cosine on the
-  normalized vectors) — **near-exact** (recall@10 ≈ 1.0 vs a brute-force baseline), ~2 GB per ~1M German
-  speeches, ~150 ms/query on CPU (negligible next to the query-embedding call). (An IVF-PQ build is
-  ~30× smaller but far too lossy on these 2048-d vectors — recall@10 ≈ 0.32 — so SQ8 is the default.)
-- **Query encoding — two backends** (`PARLIAMENT_EMBED_BACKEND`):
-  - **`api`** (default when `JINA_API_KEY` is set): encodes the query via the
-    [Jina embeddings API](https://jina.ai/embeddings/) (`task=retrieval.query`). **No local model,
-    no GPU, no torch** — the serving box only needs `requirements-api.txt`. Ideal for a small CPU host.
-  - **`local`**: loads `jina-embeddings-v4` via `sentence-transformers` on CPU (needs the full
-    `requirements.txt`; heavier). Good for fully offline / air-gapped use.
-- **Retrieval-only:** no LLM/summary; the ranked original passages are the output.
+- **Embeddings:** every speech is encoded as a whole with
+  [`jinaai/jina-embeddings-v4`](https://huggingface.co/jinaai/jina-embeddings-v4) (multilingual, 2048
+  dimensions, context of up to 32k tokens), using the retrieval task with the passage adapter and
+  L2-normalised vectors. Speeches of more than 24,000 words (three in the corpus) are split into
+  overlapping chunks, so such a speech can appear twice in a result list.
+- **Index:** a FAISS flat index with 8-bit scalar quantisation (SQ8), searched by inner product, which equals
+  cosine similarity on normalised vectors. On the German speeches it reaches a recall@10 of about 1.0
+  against a brute-force search, needs about 2 GB per million speeches and answers in about 150 ms on a CPU.
+  An IVF-PQ build is roughly thirty times smaller but too lossy on these vectors (recall@10 of about 0.32),
+  so SQ8 is the default.
+- **Query encoding**, two backends (`PARLIAMENT_EMBED_BACKEND`):
+  - `api` (the default when `JINA_API_KEY` is set) encodes the query through the
+    [Jina embeddings API](https://jina.ai/embeddings/) with `task=retrieval.query`. The serving machine
+    needs no GPU and no torch, only `requirements-api.txt`.
+  - `local` loads `jina-embeddings-v4` through `sentence-transformers` and needs the full
+    `requirements.txt` and a machine with enough memory (about 8 GB for the weights alone).
+- **Results:** the ranked original passages. The interface is a React single-page application on top of a
+  FastAPI service; a single-file Streamlit version is kept for offline use.
 
-## Data — **not included in this repository**
+## Data
 
-This repo is **code only**. The corpora, embeddings and indexes are git-ignored and must be supplied
-separately (they are large and/or license-bound):
+The repository contains the software. The speeches come from GermaParl, which the PolMine project
+(Blätte et al.) publishes under its own terms (the prepared corpus under CLARIN PUB+BY+NC+SA, see the
+[GermaParlTEI repository](https://github.com/PolMine/GermaParlTEI)); please obtain the corpus there and cite it.
+The page footer and every exported PDF name the source and the licence. Embeddings and
+index are built from the speeches with the scripts in `tools/`; they are large and therefore not stored in
+the repository.
 
-- **GermaParl** (German Bundestag plenary protocols) — from the [PolMine project](https://polmine.github.io/)
-  (Blätte et al.). Cite and observe their terms.
-- Build the deployment artifacts from your embeddings with the scripts in `tools/`:
-  ```bash
-  # produces data/de_metadata.parquet + data/indexes/de_ivfpq.faiss (row-aligned)
-  python tools/build_metadata_parquet.py --data-dir /path/with/DE_Master_Chunks.csv --corpus DE
-  python tools/build_sq8_indexes.py      --data-dir /path/with/embeddings_jina_v4 --corpus DE  # near-exact, ~2 GB
-  ```
+```bash
+# produces data/de_metadata.parquet and data/indexes/de_sq8.faiss (row-aligned)
+python tools/build_metadata_parquet.py --data-dir /path/with/DE_Master_Chunks.csv --corpus DE
+python tools/build_sq8_indexes.py      --data-dir /path/with/embeddings_jina_v4 --corpus DE
+```
 
 ## Run it
 
-**Web app (FastAPI + React) — the deployed version, matching the sibling SOEP/INKAR finders.**
+**Web app (FastAPI and React).**
 ```bash
-cp .env.example .env                      # put your JINA_API_KEY in it (never commit .env)
+cp .env.example .env                      # put your JINA_API_KEY in it, and never commit .env
 # backend (retrieval API)
 pip install -r backend/requirements.txt
 cd backend && PARLIAMENT_DATA_DIR=../data uvicorn main:app --port 18004
 # frontend (separate shell)
 cd frontend && npm install && VITE_API_URL=http://localhost:18004/api npm run dev
 ```
-In production: `uvicorn main:app` behind a reverse proxy that routes `/api/*` to the backend and serves
-the static `frontend/` build at `/` (a Caddy `germaparl` vhost reusing the wildcard cert — same pattern
-as the SOEP/INKAR finders).
+In production, `uvicorn main:app` runs behind a reverse proxy that routes `/api/*` to the backend and serves
+the static frontend build at `/`; `deploy/Caddyfile.snippet` shows the Caddy configuration used for the
+public instance.
 
-**Streamlit (single-file, portable) — the simple/offline alternative.**
+**Streamlit (single file, portable).**
 ```bash
 pip install -r requirements-api.txt
 PORTABLE_PARLIAMENT_DATA_DIR=./data streamlit run app.py
 ```
-Or the macOS double-click launcher `deploy/run_peer_app.command`.
+or the macOS double-click launcher `deploy/run_peer_app.command`.
+
+## Configuration
+
+Environment variables of the backend (all optional except the key for the `api` backend):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `JINA_API_KEY` | none | key for query encoding through the Jina API |
+| `PARLIAMENT_EMBED_BACKEND` | `api` with a key, else `local` | where queries are encoded |
+| `PARLIAMENT_DATA_DIR` | `./data` | folder with `de_metadata.parquet` and `indexes/de_sq8.faiss` |
+| `PARLIAMENT_MAX_QUERY_CHARS` | 500 | longest accepted query |
+| `PARLIAMENT_RATE_PER_MIN` | 30 | uncached searches per visitor and minute (held in memory) |
+| `PARLIAMENT_DAILY_EMBED_CAP` | 3000 | uncached searches per day across all visitors (0 switches the cap off) |
+| `PARLIAMENT_CORS_ORIGINS` | the public address and local dev servers | origins allowed to call the API from a browser |
+
+The data are loaded when the service starts. A search that is repeated, or only changes the year filter,
+reuses the cached query vector and costs no external call.
+
+## Feedback
+
+The page header links to a short feedback form at
+<https://geolab.soz.uni-bielefeld.de/feedback/?app=germaparl>. The form stores a message and an optional
+email address on the research server for 90 days and does not attach the query, the selected speeches or
+any browser identity.
 
 ## Author
 
-Konstantin Wandel, research fellow at Universität Bielefeld (SOEP-RegioHub):
-<https://konstantinwandel.github.io/>
+Konstantin Wandel, Universität Bielefeld (SOEP-RegioHub): <https://konstantinwandel.github.io/>
 
 ## Citing
 
-If you use this software, please cite it via the archived release — see `CITATION.cff`
-(a Zenodo DOI is minted per GitHub release). Please also cite the underlying corpus (GermaParl, PolMine).
+Please cite the software through the archived release (see `CITATION.cff`; a Zenodo DOI is minted for each
+GitHub release), and cite the underlying corpus, GermaParl (PolMine), as well.
 
 ## License
 
-[MIT](LICENSE) © 2026 Konstantin Wandel. Built at Universität Bielefeld. Uses the Jina v4 embeddings
-(model © Jina AI) and GermaParl data under its own terms.
-
-## What the public deployment serves
-
-`PARLIAMENT_CORPORA` is an allowlist, and the public deployment sets it to `germaparl`. Any other
-corpus is refused with a 404 at every endpoint, even if its index files are present on the host.
-This is deliberate: **RegioPress is licensed material (Genios) and must never be exposed publicly.**
-It is run locally only, and its data has no place on a public host.
-
+[MIT](LICENSE) © 2026 Konstantin Wandel. Built at Universität Bielefeld. The Jina v4 model is © Jina AI,
+and GermaParl is used under its own terms.

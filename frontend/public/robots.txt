@@ -1,0 +1,3 @@
+# The page is not meant to be found through search engines yet.
+User-agent: *
+Disallow: /

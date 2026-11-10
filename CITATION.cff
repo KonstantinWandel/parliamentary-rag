@@ -1,5 +1,6 @@
 cff-version: 1.2.0
-title: "Parliamentary Speech Finder: semantic search over German Bundestag speeches (GermaParl)"
+title: "Plenarsuche: semantic search over speeches of the German Bundestag"
+abstract: "Web application for semantic search over the plenary speeches of the German Bundestag from 1949 to 2025, based on the GermaParl corpus of the PolMine project. Speeches are embedded with jina-embeddings-v4 and searched through a FAISS index; results are the original speeches, ranked by similarity."
 message: "If you use this software, please cite it using these metadata."
 type: software
 authors:
@@ -21,8 +22,8 @@ identifiers:
     value: "10.5281/zenodo.21194708"
     description: "Archived release v0.1.0 (2026-07-04)"
 license: MIT
-version: 0.2.1
-date-released: "2026-08-29"
+version: 0.3.0
+date-released: "2026-11-10"
 keywords:
   - parliamentary debates
   - semantic search
@@ -33,4 +34,4 @@ keywords:
 references:
   - type: data
     title: "GermaParl (PolMine project)"
-    notes: "German Bundestag plenary protocols corpus; cite per PolMine/CLARIN terms."
+    notes: "German Bundestag plenary protocols corpus; please cite it under the terms of the PolMine project."

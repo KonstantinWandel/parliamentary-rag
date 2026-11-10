@@ -1,0 +1,33 @@
+[Unit]
+Description=Plenarsuche API (FastAPI/uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=geolab
+Group=geolab
+WorkingDirectory=/opt/geolab/parliamentary/backend
+EnvironmentFile=/opt/geolab/parliamentary/parliamentary.env
+Environment=PARLIAMENT_DATA_DIR=/opt/geolab/parliamentary/data
+ExecStart=/opt/geolab/parliamentary/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 18004 --no-access-log
+Restart=on-failure
+RestartSec=5s
+
+# Confinement. The service reads its data and writes nothing outside its own cache directory.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+# The index and metadata take about 7 GB; the VM has 16 GB and hosts the two finders as well.
+MemoryMax=12G
+
+[Install]
+WantedBy=multi-user.target

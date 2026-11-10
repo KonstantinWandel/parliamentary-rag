@@ -1,6 +1,6 @@
 {
-  "title": "Parliamentary Speech Finder: semantic search over German Bundestag speeches (GermaParl)",
-  "description": "A retrieval-only research tool for semantic search over the plenary speeches of the German Bundestag (GermaParl, PolMine). Speeches are embedded with jina-embeddings-v4; a query is encoded with the same retrieval adapter and matched against a FAISS index, with year filtering. Results are similarity-ranked original speeches with no model-generated summary, and selected speeches can be exported as individual PDFs. Code only: no corpora and no embeddings are included or distributed. The public deployment serves GermaParl alone; other corpora the code supports are licensed material and are run locally, never published.",
+  "title": "Plenarsuche: semantic search over speeches of the German Bundestag",
+  "description": "Plenarsuche is a web application for semantic search over the plenary speeches of the German Bundestag from 1949 to 2025, based on the GermaParl corpus of the PolMine project. A user describes a topic in plain language and receives the most similar speeches, ranked by similarity, with speaker, party and date. Results can be limited to a range of years, and selected speeches can be downloaded as PDF files, one per speech. Each speech is embedded as a whole with jina-embeddings-v4; a query is encoded with the retrieval adapter of the same model and matched against a FAISS index. The tool returns the original speeches and generates no summaries or answers. The backend is a FastAPI service and the interface a React application. The record contains the software. The speeches are taken from GermaParl, which the PolMine project publishes under its own terms (the prepared corpus under CLARIN PUB+BY+NC+SA), and have to be obtained from there. A public instance runs at https://germaparl.geolab.soz.uni-bielefeld.de.",
   "upload_type": "software",
   "license": "MIT",
   "creators": [
@@ -25,5 +25,6 @@
       "resource_type": "dataset",
       "scheme": "url"
     }
-  ]
+  ],
+  "version": "0.3.0"
 }

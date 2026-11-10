@@ -1,6 +1,22 @@
-# Serve the finder as a subdomain alongside the SOEP/INKAR finders (same wildcard cert).
-# Add to /etc/caddy/Caddyfile, then: systemctl reload caddy
+# Public instance: the vhost as it runs on the geolab VM. `appsite` is a shared snippet with the
+# wildcard certificate, compression, basic security headers and the access log.
 germaparl.geolab.soz.uni-bielefeld.de {
-    import appsite
-    reverse_proxy 127.0.0.1:18003
+	import appsite
+
+	# Vite writes the content hash into every bundle name, so these never change under the same
+	# address and may be cached for a year. The document stays revalidated.
+	@bundles path /assets/*
+	header @bundles Cache-Control "public, max-age=31536000, immutable"
+
+	handle /api/* {
+		request_body {
+			max_size 16KB
+		}
+		reverse_proxy 127.0.0.1:18004
+	}
+	handle {
+		root * /opt/geolab/sites/germaparl
+		try_files {path} /index.html
+		file_server
+	}
 }

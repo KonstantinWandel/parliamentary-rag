@@ -3,7 +3,7 @@
 
 SQ8 is the recommended index: on the 2048-d Jina v4 vectors it is near-exact
 (recall@10 ~1.0 vs a brute-force baseline) at ~2 GB per ~1M speeches, and CPU-fast
-(~150 ms/query — negligible next to the query-embedding API call).
+(~150 ms per query, negligible next to the query-embedding API call).
 
 NOTE: the alternative build_ivfpq_indexes.py is ~30x smaller (~60 MB) but its product
 quantization is far too lossy on these high-dim vectors (measured recall@10 ~0.32 even at
@@ -26,10 +26,16 @@ def build(embedding_path: Path, output_path: Path, train_size: int, batch_size: 
     emb = np.load(embedding_path, mmap_mode="r")
     n, dim = emb.shape
     index = faiss.IndexScalarQuantizer(dim, faiss.ScalarQuantizer.QT_8bit, faiss.METRIC_INNER_PRODUCT)
-    rng = np.random.default_rng(42)
-    tr = np.sort(rng.choice(n, size=min(train_size, n), replace=False))
-    print(f"Training SQ8 on {len(tr):,} vectors from {embedding_path.name}", flush=True)
-    index.train(np.ascontiguousarray(emb[tr], dtype=np.float32))
+    # Sample the training set as evenly-spaced CONTIGUOUS blocks, not scattered rows:
+    # fancy-indexing a 257GB memmap with 200k random indices triggers 200k random reads over
+    # network storage (CephFS) and effectively hangs. The vectors are in DuckDB hash order,
+    # so strided blocks are an unbiased sample and read sequentially (fast).
+    nblk = 50
+    blk = max(1, min(train_size, n) // nblk)
+    offs = np.linspace(0, max(0, n - blk), nblk, dtype=np.int64)
+    tr = np.concatenate([np.asarray(emb[o:o + blk], dtype=np.float32) for o in offs])
+    print(f"Training SQ8 on {len(tr):,} vectors ({nblk} blocks) from {embedding_path.name}", flush=True)
+    index.train(np.ascontiguousarray(tr))
     for s in range(0, n, batch_size):
         index.add(np.ascontiguousarray(emb[s:s + batch_size], dtype=np.float32))
         print(f"  added {min(s + batch_size, n):,} / {n:,}", flush=True)

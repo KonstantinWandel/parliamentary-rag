@@ -1,32 +1,33 @@
-"""Speech / article Finder — FastAPI retrieval backend (multi-corpus).
+"""Plenarsuche: FastAPI retrieval backend for semantic search over Bundestag speeches (GermaParl).
 
-Serves semantic search over one or more Jina-v4 FAISS SQ8 indexes. Retrieval-only:
-similarity-ranked passages, no model-generated summary. Endpoints are sync (`def`) so
-FastAPI runs them in a threadpool -> concurrent queries parallelize.
-
-Corpora are auto-discovered: any entry in CORPORA whose index + metadata files exist
-under PARLIAMENT_DATA_DIR is served. So the same code serves GermaParl alone today and
-gains RegioPress the moment its index is built — no config change.
+Serves one Jina-v4 FAISS index (flat, 8-bit scalar quantisation) and its row-aligned metadata table.
+Results are the original speeches ranked by similarity; nothing is generated. Endpoints are sync (`def`),
+so FastAPI runs them in a threadpool and concurrent queries run in parallel.
 
 Query encoding has two backends (PARLIAMENT_EMBED_BACKEND):
-  local  — jina-embeddings-v4 via sentence-transformers on this box's GPU (no API key).
-  api    — the Jina embeddings API (for a keyed, GPU-less host like the VM).
+  local: jina-embeddings-v4 through sentence-transformers on this machine (no API key).
+  api:   the Jina embeddings API (for a keyed host without a GPU, such as the public VM).
 Default: api if JINA_API_KEY is set, else local.
 """
+import logging
 import os
 import threading
 import time
+from collections import OrderedDict, deque
+from datetime import datetime, timezone
 from pathlib import Path
-
-from collections import OrderedDict
 
 import faiss
 import numpy as np
 import pandas as pd
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+log = logging.getLogger("uvicorn.error")   # goes to the journal; never log queries or visitor addresses
 
 DATA_DIR = Path(os.environ.get("PARLIAMENT_DATA_DIR", "./data"))
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()
@@ -36,71 +37,43 @@ EMBED_BACKEND = os.environ.get("PARLIAMENT_EMBED_BACKEND", "api" if JINA_API_KEY
 EMBED_MODEL = os.environ.get("PARLIAMENT_EMBED_MODEL", "jinaai/jina-embeddings-v4")
 EMBED_DEVICE = os.environ.get("PARLIAMENT_EMBED_DEVICE", "cuda").strip()
 EMBED_MAX_SEQ = int(os.environ.get("PARLIAMENT_EMBED_MAX_SEQ", "512"))
-NPROBE = int(os.environ.get("PARLIAMENT_NPROBE", "64"))  # IVF cells scanned per query (recall<->speed)
-# Move the FAISS index onto the GPU. At RegioPress scale (62.7M) a flat CPU index searches a
-# single query single-threaded (~56s); on the H200 a flat SQ8 clone is EXACT and ~tens of ms.
-# IVF was rejected here: the corpus is near-duplicate-heavy, so clustering is lopsided (~0.4 recall).
-FAISS_GPU = os.environ.get("PARLIAMENT_FAISS_GPU", "0").strip() not in ("", "0", "false", "False")
-GPU_ID = int(os.environ.get("PARLIAMENT_GPU_ID", "0"))
-HNSW_EF = int(os.environ.get("PARLIAMENT_HNSW_EF", "512"))  # recall<->speed AND the filtered-query candidate pool
-MAX_EXACT = int(os.environ.get("PARLIAMENT_MAX_EXACT", "5000000"))  # exact filtered search cap when vectors are in RAM
-# (RAM fancy-index + matmul is ~1-2s even at 5M; covers every paper. Above this -> ANN pool.)
 
-# Static corpus registry. `kind` drives the field projection and the UI card layout;
-# `embed` pins each corpus to the model + query-formatting its index was BUILT with, so a
-# query is always encoded into the same space as its documents (GermaParl=Jina v4;
-# RegioPress=e5-large-instruct, whose queries take the instruct prefix and whose passages
-# are raw — see tools/embed_regiopress.py).
-CORPORA = {
-    "germaparl": {
-        "kind": "parliament",
-        "label": "Deutscher Bundestag (GermaParl)",
-        "index": "indexes/de_sq8.faiss",
-        "meta": "de_metadata.parquet",
-        "embed": {"model": "jinaai/jina-embeddings-v4", "family": "jina"},
-    },
-    "regiopress": {
-        "kind": "press",
-        "label": "RegioPress (Regionalzeitungen)",
-        "index": "indexes/rp_near_hnsw.bin",
-        "index_type": "hnswlib",
-        "dim": 1024,
-        "meta": "rp_near.parquet",
-        "vectors": "regiopress/rp_near_embeddings.npy",  # loaded to RAM for exact filtered search (any paper size)
-        "embed": {"model": "intfloat/multilingual-e5-large-instruct", "family": "e5",
-                  "query_instruct": "Instruct: Given a search query, retrieve relevant German news articles\nQuery: "},
-    },
-}
+CORPUS_ID = "germaparl"
+CORPUS_LABEL = "Deutscher Bundestag (GermaParl)"
+INDEX_PATH = DATA_DIR / "indexes" / "de_sq8.faiss"
+META_PATH = DATA_DIR / "de_metadata.parquet"
 
-# Optional allowlist: PARLIAMENT_CORPORA="regiopress" serves ONLY that corpus. This box
-# serves RegioPress; GermaParl is served separately from the GeoLAB VM, so we exclude it
-# here even though its index files happen to be staged on disk. Empty = every built corpus.
-_ALLOW = [c.strip() for c in os.environ.get("PARLIAMENT_CORPORA", "").split(",") if c.strip()]
+MAX_QUERY_CHARS = int(os.environ.get("PARLIAMENT_MAX_QUERY_CHARS", "500"))
+QUERY_CACHE_SIZE = int(os.environ.get("PARLIAMENT_QUERY_CACHE", "512"))
+RATE_PER_MIN = int(os.environ.get("PARLIAMENT_RATE_PER_MIN", "30"))        # uncached searches per visitor
+DAILY_EMBED_CAP = int(os.environ.get("PARLIAMENT_DAILY_EMBED_CAP", "3000"))  # uncached searches per day, all visitors
+JINA_CONCURRENCY = int(os.environ.get("PARLIAMENT_JINA_CONCURRENCY", "6"))
+
+app = FastAPI(title="Plenarsuche API")
+# The shipped frontend is same-origin and needs no CORS. The list only lets a local dev server
+# (vite on :5173) and the public address talk to the API from a browser.
+_CORS = [o.strip() for o in os.environ.get(
+    "PARLIAMENT_CORS_ORIGINS",
+    "https://germaparl.geolab.soz.uni-bielefeld.de,http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=_CORS, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
 
-def _available():
-    """Corpora that are allowed AND whose index + metadata files exist, in registry order."""
-    out = []
-    for cid, c in CORPORA.items():
-        if _ALLOW and cid not in _ALLOW:
-            continue
-        if (DATA_DIR / c["index"]).exists() and (DATA_DIR / c["meta"]).exists():
-            out.append(cid)
-    return out
+@app.exception_handler(RequestValidationError)
+async def _invalid_request(request: Request, exc: RequestValidationError):
+    """A short German message. FastAPI's default echoes the offending input, which breaks the response
+    for a lone surrogate and gives the German interface an array where it expects a sentence."""
+    if any(e.get("type") == "string_too_long" and "query" in e.get("loc", ()) for e in exc.errors()):
+        msg = f"Die Suchanfrage ist zu lang (höchstens {MAX_QUERY_CHARS} Zeichen)."
+    else:
+        msg = "Ungültige Anfrage. Bitte die Eingaben prüfen."
+    return JSONResponse(status_code=422, content={"detail": msg})
 
 
-DEFAULT_CORPUS = os.environ.get("PARLIAMENT_DEFAULT_CORPUS", "").strip() or (
-    _available()[0] if _available() else "germaparl"
-)
-
-app = FastAPI(title="Semantic Finder API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-_loaded = {}          # cid -> {"index":..., "df":...}
+# ---------------------------------------------------------------------------------------------
+# Data: loaded once, lazily or at start-up
+# ---------------------------------------------------------------------------------------------
+_state = None
 _load_lock = threading.Lock()
-_models = {}          # model_name -> SentenceTransformer (a corpus may use its own encoder)
-_model_lock = threading.Lock()
-_gpu_res = []         # StandardGpuResources must outlive the GPU indexes that use them
 
 
 def _norm_year(df):
@@ -109,72 +82,58 @@ def _norm_year(df):
     return pd.to_datetime(df.get("date"), errors="coerce").dt.year.fillna(-1).astype(int)
 
 
-def _load_corpus(cid: str):
-    if cid in _loaded:
-        return _loaded[cid]
-    if cid not in CORPORA:
-        raise HTTPException(404, f"Unknown corpus '{cid}'")
-    if _ALLOW and cid not in _ALLOW:
-        raise HTTPException(404, f"Corpus '{cid}' is not served here.")
-    c = CORPORA[cid]
-    ipath, mpath = DATA_DIR / c["index"], DATA_DIR / c["meta"]
-    if not ipath.exists() or not mpath.exists():
-        raise HTTPException(503, f"Corpus '{cid}' is not built yet.")
+def _load():
+    """Index and metadata, matched by row position. Loaded on first use if start-up loading failed."""
+    global _state
+    if _state is not None:
+        return _state
+    if not INDEX_PATH.exists() or not META_PATH.exists():
+        raise HTTPException(503, "Der Datensatz ist momentan nicht verfügbar.")
     with _load_lock:
-        if cid in _loaded:
-            return _loaded[cid]
-        itype = c.get("index_type", "faiss")
-        if itype == "hnswlib":
-            import hnswlib
-            idx = hnswlib.Index(space="ip", dim=int(c["dim"]))
-            idx.load_index(str(ipath))
-            idx.set_ef(HNSW_EF)
-            ntotal = idx.get_current_count()
-        else:
-            idx = faiss.read_index(str(ipath))
-            try:  # IVF indexes need nprobe set; no-op for flat indexes
-                faiss.extract_index_ivf(idx).nprobe = NPROBE
-            except Exception:
-                pass
-            if FAISS_GPU:
-                try:
-                    res = faiss.StandardGpuResources()
-                    idx = faiss.index_cpu_to_gpu(res, GPU_ID, idx)  # CPU copy is dropped -> RAM freed
-                    _gpu_res.append(res)                            # keep resources alive
-                except Exception as e:
-                    print(f"[warn] '{cid}' index stays on CPU (GPU load failed): {e}", flush=True)
-            ntotal = idx.ntotal
-        df = pd.read_parquet(mpath)
+        if _state is not None:
+            return _state
+        t = time.time()
+        index = faiss.read_index(str(INDEX_PATH))
+        df = pd.read_parquet(META_PATH)
+        # Rows are matched by position only, so a length mismatch would show the wrong speaker,
+        # date and text with no error. Refuse to serve instead.
+        if int(index.ntotal) != len(df):
+            raise RuntimeError(f"index has {index.ntotal} vectors but the metadata has {len(df)} rows")
         df["text"] = df["text"].fillna("").astype(str) if "text" in df.columns else ""
         df["year"] = _norm_year(df)
         df["date"] = df["date"].astype(str) if "date" in df.columns else ""
-        extra = {}
-        if c["kind"] == "parliament":
-            spk = next((k for k in ("speaker_name", "speaker") if k in df.columns), None)
-            df["speaker"] = df[spk].fillna("").astype(str) if spk else ""
-            df["party"] = df["party"].fillna("").astype(str) if "party" in df.columns else ""
-        else:  # press: RegioPress metadata uses source/section/page (no source_id/ressort/title).
-            # Normalize section casing ("Lokales"/"LOKALES"/"lokales" -> "Lokales") so the ressort
-            # filter/dropdown merges the variants; the raw `section` in the data stays untouched.
-            df["ressort"] = (df["section"].fillna("").astype(str).str.strip().str.title()
-                             if "section" in df.columns else "")
-            df["source_id"] = df["source"].fillna("").astype(str) if "source" in df.columns else ""
-            for col in ("source", "title", "subtitle", "page"):
-                df[col] = df[col].fillna("").astype(str) if col in df.columns else ""
-            # filter arrays for the exhaustive selective-filter path (exact search within a paper/ressort)
-            sc = df["source_id"].astype("category"); rc = df["ressort"].astype("category")
-            extra = {"yr_arr": df["year"].to_numpy(),
-                     "src_codes": sc.cat.codes.to_numpy(), "src_map": {v: i for i, v in enumerate(sc.cat.categories)},
-                     "res_codes": rc.cat.codes.to_numpy(), "res_map": {v: i for i, v in enumerate(rc.cat.categories)}}
-        vecs = None
-        if c.get("vectors"):
-            vpath = DATA_DIR / c["vectors"]
-            if vpath.exists():
-                t = time.time()
-                vecs = np.load(vpath)   # full load into RAM (fancy-index needs RAM, not a CephFS memmap)
-                print(f"[{cid}] loaded {vecs.shape} vectors into RAM for exact filtering ({time.time()-t:.0f}s)", flush=True)
-        _loaded[cid] = {"index": idx, "df": df, "ntotal": ntotal, "type": itype, "vecs": vecs, **extra}
-        return _loaded[cid]
+        spk = next((k for k in ("speaker_name", "speaker") if k in df.columns), None)
+        df["speaker"] = df[spk].fillna("").astype(str).str.replace("﻿", "", regex=False) if spk else ""
+        df["party"] = df["party"].fillna("").astype(str) if "party" in df.columns else ""
+        years = df["year"].to_numpy()
+        valid = years[years > 0]
+        _state = {"index": index, "df": df, "ntotal": int(index.ntotal), "years": years,
+                  "min_year": int(valid.min()) if len(valid) else 0,
+                  "max_year": int(valid.max()) if len(valid) else 0}
+        log.info("data loaded: %d speeches in %.0f s", len(df), time.time() - t)
+        return _state
+
+
+@app.on_event("startup")
+def _preload():
+    """Load in the background so the first visitor after a restart does not wait for the data."""
+    def run():
+        try:
+            _load()
+        except Exception as e:   # the first request will try again and report the problem
+            log.warning("start-up load failed: %s: %s", type(e).__name__, e)
+    threading.Thread(target=run, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------------------------
+# Query encoding
+# ---------------------------------------------------------------------------------------------
+class EmbedUnavailable(Exception):
+    """The query could not be turned into a vector (reason in args[0])."""
+
+
+_models = {}
+_model_lock = threading.Lock()
 
 
 def _get_model(name: str):
@@ -192,23 +151,15 @@ def _get_model(name: str):
             pass
         if EMBED_DEVICE == "cuda":
             try:
-                m.half()  # match the fp16 doc embeddings; negligible for a single-query encode
+                m.half()  # match the fp16 document embeddings; negligible for one short query
             except Exception:
                 pass
         _models[name] = m
         return m
 
 
-def _encode_local(query: str, c: dict) -> np.ndarray:
-    """Encode a query in the SAME space as corpus `c`'s documents."""
-    e = c["embed"]
-    model = _get_model(e["model"])
-    if e.get("family") == "e5":
-        # e5-large-instruct: queries get the instruct prefix, passages are raw (built that way).
-        v = model.encode([e.get("query_instruct", "") + query], convert_to_numpy=True,
-                         normalize_embeddings=True, batch_size=1, show_progress_bar=False)
-        return np.asarray(v, dtype=np.float32)
-    # jina (or unknown): try the task/prompt kwargs, fall back to a raw encode.
+def _encode_local(query: str) -> np.ndarray:
+    model = _get_model(EMBED_MODEL)
     for kw in (dict(task="retrieval", prompt_name="query"), dict(task="retrieval.query"), dict()):
         try:
             v = model.encode([query], convert_to_numpy=True, normalize_embeddings=True,
@@ -221,12 +172,12 @@ def _encode_local(query: str, c: dict) -> np.ndarray:
     raise RuntimeError("Local query encoding failed (unexpected encode signature).")
 
 
-def _encode_api(query: str, retries: int = 3) -> np.ndarray:
+def _encode_api(query: str, retries: int = 2) -> np.ndarray:
     last_err = None
     for attempt in range(retries):
         try:
             resp = requests.post(
-                JINA_API_URL, timeout=(10, 45),
+                JINA_API_URL, timeout=(5, 15),
                 headers={"Authorization": f"Bearer {JINA_API_KEY}", "Content-Type": "application/json"},
                 json={"model": JINA_API_MODEL, "task": "retrieval.query", "input": [{"text": query}]},
             )
@@ -236,11 +187,14 @@ def _encode_api(query: str, retries: int = 3) -> np.ndarray:
                 time.sleep(1.5 * (attempt + 1))
             continue
         if resp.status_code >= 500:
+            log.warning("Jina API answered %s", resp.status_code)
             last_err = f"Jina API {resp.status_code}"
             if attempt < retries - 1:
                 time.sleep(1.5 * (attempt + 1))
             continue
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            log.warning("Jina API answered %s (key, quota or input problem)", resp.status_code)
+            raise EmbedUnavailable("quota" if resp.status_code == 429 else "rejected")
         v = np.asarray(resp.json()["data"][0]["embedding"], dtype=np.float32)
         n = float(np.linalg.norm(v))
         if n > 0:
@@ -249,180 +203,188 @@ def _encode_api(query: str, retries: int = 3) -> np.ndarray:
     raise RuntimeError(f"Jina embedding API failed after {retries} attempts: {last_err}")
 
 
-# A query vector depends only on the query text and the corpus's embedding space, so it is
-# cached. On the VM the vector comes from the Jina API over the network, measured at 0.3 to 1.0 s
-# and the single largest part of a search; a repeated query (a demo shown twice, a filter change,
-# someone refining a phrase) then costs nothing. Small, bounded, per process.
-_QUERY_VEC_CACHE: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
-QUERY_CACHE_SIZE = int(os.environ.get("PARLIAMENT_QUERY_CACHE", "512"))
+# A query vector depends only on the query text, so it is cached: a repeated query, a filter change or a
+# refined phrase then costs no external call. Bounded by entry count, guarded by a lock.
+_QUERY_VEC_CACHE: "OrderedDict[str, np.ndarray]" = OrderedDict()
+_CACHE_LOCK = threading.Lock()
+_JINA_SLOTS = threading.BoundedSemaphore(JINA_CONCURRENCY)
 
 
-def _encode(query: str, cid: str) -> np.ndarray:
-    c = CORPORA[cid]
-    key = (c["embed"].get("model"), c["embed"].get("query_instruct", ""), query)
-    hit = _QUERY_VEC_CACHE.get(key)
-    if hit is not None:
-        _QUERY_VEC_CACHE.move_to_end(key)
+def _cache_get(key):
+    with _CACHE_LOCK:
+        hit = _QUERY_VEC_CACHE.get(key)
+        if hit is not None:
+            _QUERY_VEC_CACHE.move_to_end(key)
         return hit
-    # The Jina API path is only valid for the jina family (the GPU-less VM serving GermaParl);
-    # everything else (incl. e5 RegioPress on this GPU box) encodes locally.
-    if EMBED_BACKEND == "api" and c["embed"].get("family") == "jina":
-        vec = _encode_api(query)
+
+
+def _encode(query: str, count_call=None) -> np.ndarray:
+    hit = _cache_get(query)
+    if hit is not None:
+        return hit
+    if count_call is not None:
+        count_call()        # only vectors that cost an external call count against an allowance
+    if EMBED_BACKEND == "api":
+        if not _JINA_SLOTS.acquire(timeout=5):
+            raise EmbedUnavailable("busy")
+        try:
+            vec = _encode_api(query)
+        finally:
+            _JINA_SLOTS.release()
     else:
-        vec = _encode_local(query, c)
-    _QUERY_VEC_CACHE[key] = vec
-    while len(_QUERY_VEC_CACHE) > QUERY_CACHE_SIZE:
-        _QUERY_VEC_CACHE.popitem(last=False)
+        vec = _encode_local(query)
+    with _CACHE_LOCK:
+        _QUERY_VEC_CACHE[query] = vec
+        while len(_QUERY_VEC_CACHE) > QUERY_CACHE_SIZE:
+            _QUERY_VEC_CACHE.popitem(last=False)
     return vec
 
 
-def _project(kind: str, row, rank: int, score: float) -> dict:
-    base = {"rank": rank, "score": round(float(score), 4),
-            "date": str(row["date"])[:10], "year": int(row["year"]), "text": row["text"]}
-    if kind == "parliament":
-        base.update(speaker=row.get("speaker", ""), party=row.get("party", ""))
-    else:
-        base.update(source=row.get("source", ""), source_id=row.get("source_id", ""),
-                    ressort=row.get("ressort", ""), title=row.get("title", ""),
-                    subtitle=row.get("subtitle", ""), page=row.get("page", ""))
-    return base
+# ---------------------------------------------------------------------------------------------
+# Allowances for searches that cost an external embedding call. Held in memory only and keyed on the
+# address Caddy forwards; nothing is written to disk or to the log.
+# ---------------------------------------------------------------------------------------------
+_rate = {}
+_rate_lock = threading.Lock()
+_daily = {"day": None, "n": 0}
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    return (fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")) or "?"
+
+
+def _allowance_check(ip: str):
+    now = time.time()
+    today = datetime.now(timezone.utc).date()
+    with _rate_lock:
+        if _daily["day"] != today:
+            _daily["day"], _daily["n"] = today, 0
+        if DAILY_EMBED_CAP and _daily["n"] >= DAILY_EMBED_CAP:
+            raise HTTPException(503, "Das Tageslimit für neue Suchanfragen ist erreicht. Wiederholte Suchen und "
+                                     "Filteränderungen funktionieren weiterhin; neue Suchbegriffe morgen wieder.")
+        if len(_rate) > 20000:                      # bound the table
+            for k in [k for k, d in _rate.items() if not d or now - d[-1] > 60]:
+                _rate.pop(k, None)
+        d = _rate.setdefault(ip, deque())
+        while d and now - d[0] > 60:
+            d.popleft()
+        if len(d) >= RATE_PER_MIN:
+            raise HTTPException(429, "Zu viele Suchanfragen in kurzer Zeit. Bitte in einer Minute erneut versuchen.")
+        d.append(now)
+        _daily["n"] += 1
+
+
+# ---------------------------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------------------------
+def _check_corpus(corpus):
+    if corpus not in (None, "", CORPUS_ID):
+        raise HTTPException(404, "Unbekannter Datensatz.")
+
+
+def _project(row, rank: int, score: float) -> dict:
+    return {"rank": rank, "score": round(float(score), 4), "date": str(row["date"])[:10],
+            "year": int(row["year"]), "text": row["text"],
+            "speaker": row.get("speaker", ""), "party": row.get("party", "")}
 
 
 class SearchReq(BaseModel):
-    query: str
-    corpus: str | None = None
+    query: str = Field(max_length=MAX_QUERY_CHARS)
+    corpus: str | None = Field(default=None, max_length=40)   # accepted for older clients, only germaparl exists
     top_k: int = 10
-    year_start: int | None = None
-    year_end: int | None = None
-    source_id: str | None = None   # press only
-    ressort: str | None = None     # press only
+    year_start: int | None = Field(default=None, ge=0, le=3000)
+    year_end: int | None = Field(default=None, ge=0, le=3000)
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "backend": EMBED_BACKEND, "corpora": _available()}
+    return {"ok": True, "backend": EMBED_BACKEND, "corpora": [CORPUS_ID], "loaded": _state is not None}
 
 
 @app.get("/api/corpora")
 def corpora():
-    return {"corpora": [{"id": c, "kind": CORPORA[c]["kind"], "label": CORPORA[c]["label"]}
-                        for c in _available()], "default": DEFAULT_CORPUS}
+    return {"corpora": [{"id": CORPUS_ID, "kind": "parliament", "label": CORPUS_LABEL}], "default": CORPUS_ID}
 
 
 @app.get("/api/meta")
 def meta(corpus: str | None = None):
-    cid = corpus or DEFAULT_CORPUS
-    st = _load_corpus(cid)
-    df = st["df"]
-    yrs = df.loc[df["year"] > 0, "year"]
-    out = {
-        "corpus": cid, "kind": CORPORA[cid]["kind"], "label": CORPORA[cid]["label"],
-        "min_year": int(yrs.min()) if len(yrs) else 0,
-        "max_year": int(yrs.max()) if len(yrs) else 0,
-        "count": int(len(df)), "n_speeches": int(len(df)),  # n_speeches kept as alias
-    }
-    if CORPORA[cid]["kind"] == "press":
-        pairs = df[["source_id", "source"]].drop_duplicates().sort_values("source")
-        out["sources"] = [{"id": a, "name": b} for a, b in pairs.itertuples(index=False) if b]
-        out["ressorts"] = [r for r in df["ressort"].value_counts().head(40).index.tolist() if r]
-    return out
-
-
-def _knn(st, qv, k):
-    """Top-k (scores, ids) from either a faiss (.search) or hnswlib (.knn_query) index."""
-    if st["type"] == "hnswlib":
-        k = min(k, HNSW_EF)                       # hnswlib needs k <= ef (fixed at load)
-        labels, dists = st["index"].knn_query(qv, k=k)
-        return 1.0 - dists[0], labels[0]          # ip space: cosine = 1 - distance
-    D, I = st["index"].search(qv, k)
-    return D[0], I[0]
-
-
-def _filter_ids(st, ys, ye, src, res):
-    """Row ids matching the press filters, via the precomputed arrays (fast, exact)."""
-    m = np.ones(st["ntotal"], dtype=bool)
-    if ys is not None:
-        m &= st["yr_arr"] >= ys
-    if ye is not None:
-        m &= st["yr_arr"] <= ye
-    if src:
-        m &= st["src_codes"] == st["src_map"].get(src, -2)
-    if res:
-        m &= st["res_codes"] == st["res_map"].get(res, -2)
-    return np.flatnonzero(m)
+    _check_corpus(corpus)
+    st = _load()
+    return {"corpus": CORPUS_ID, "kind": "parliament", "label": CORPUS_LABEL,
+            "min_year": st["min_year"], "max_year": st["max_year"],
+            "count": int(len(st["df"])), "n_speeches": int(len(st["df"]))}   # n_speeches kept as alias
 
 
 @app.post("/api/search")
-def search(req: SearchReq):
-    cid = req.corpus or DEFAULT_CORPUS
-    st = _load_corpus(cid)
-    df, kind = st["df"], CORPORA[cid]["kind"]
+def search(req: SearchReq, request: Request):
+    _check_corpus(req.corpus)
+    st = _load()
+    df, nt = st["df"], st["ntotal"]
     t0 = time.time()
-    q = (req.query or "").strip()
+    # Drop NUL bytes and lone surrogates (they survive JSON parsing but break the response encoder).
+    q = (req.query or "").replace("\x00", " ").encode("utf-8", "ignore").decode("utf-8").strip()
+    ys, ye = req.year_start, req.year_end
+    if ys is not None and ye is not None and ys > ye:
+        raise HTTPException(422, "Das Startjahr liegt nach dem Endjahr.")
+
+    def reply(results, embed_ms=0):
+        return {"results": results, "took_ms": int((time.time() - t0) * 1000), "embed_ms": embed_ms,
+                "query": q, "total": len(results), "corpus": CORPUS_ID, "kind": "parliament"}
+
     if not q:
-        return {"results": [], "took_ms": 0, "query": q, "total": 0, "corpus": cid, "kind": kind}
+        return reply([])
     t_embed = time.time()
     try:
-        qv = _encode(q, cid)
+        qv = _encode(q, count_call=lambda: _allowance_check(_client_ip(request)))
         embed_ms = int((time.time() - t_embed) * 1000)
-    except Exception:
+    except HTTPException:
+        raise
+    except EmbedUnavailable as e:
+        if e.args and e.args[0] in ("quota", "busy"):
+            raise HTTPException(503, "Der Embedding-Dienst ist gerade stark ausgelastet. Bitte in einigen Sekunden erneut versuchen.")
         raise HTTPException(503, "Die Suche ist momentan nicht erreichbar (Embedding-Dienst). Bitte gleich erneut versuchen.")
+    except Exception as e:
+        log.warning("query encoding failed: %s", type(e).__name__)
+        raise HTTPException(503, "Die Suche ist momentan nicht erreichbar (Embedding-Dienst). Bitte gleich erneut versuchen.")
+
     k = max(1, min(int(req.top_k or 10), 50))
-    ys, ye, src, res = req.year_start, req.year_end, req.source_id, req.ressort
-    filtered = any(v is not None and v != "" for v in (ys, ye, src, res))
-    nt = st["ntotal"]
-    # filtered: pull a big candidate pool then post-filter. faiss escalates search_k in the loop;
-    # hnswlib is ef-capped, so grab the whole ef pool (HNSW_EF) up front for decent filter coverage.
-    # Exhaustive path for a SELECTIVE press filter (specific paper/ressort): restrict to the matching
-    # rows and do an EXACT search among them (vectors fetched from the in-RAM HNSW store), so a rare
-    # paper+topic is never missed. Broad/year-only filters fall through to the ANN pool below.
-    if st["type"] == "hnswlib" and kind == "press" and (src or res) and "src_codes" in st:
-        ids = _filter_ids(st, ys, ye, src, res)
-        if len(ids) == 0:
-            return {"results": [], "took_ms": int((time.time() - t0) * 1000), "embed_ms": embed_ms,
-                    "query": q, "total": 0, "corpus": cid, "kind": kind}
-        if len(ids) <= MAX_EXACT:
-            if st.get("vecs") is not None:
-                vecs = st["vecs"][ids]                                          # RAM fancy-index, fast at any size
-            else:
-                vecs = np.asarray(st["index"].get_items(ids), dtype=np.float32)  # fallback if vectors not in RAM
-            sims = (qv @ vecs.T)[0]
-            top = np.argsort(-sims)[:k]
-            out = [_project(kind, df.iloc[int(ids[t])], r + 1, float(sims[t])) for r, t in enumerate(top)]
-            return {"results": out, "took_ms": int((time.time() - t0) * 1000), "embed_ms": embed_ms,
-                    "query": q, "total": len(out), "corpus": cid, "kind": kind}
-    search_k = min(nt, (HNSW_EF if st["type"] == "hnswlib" else k * 10) if filtered else k)
-    out = []
-    while True:
-        scores, ids = _knn(st, qv, search_k)
-        out = []
-        for score, ri in zip(scores, ids):
-            ri = int(ri)
-            if ri < 0:
-                continue
-            row = df.iloc[ri]
-            yr = int(row["year"])
-            if ys is not None and yr < ys:
-                continue
-            if ye is not None and yr > ye:
-                continue
-            if kind == "press":
-                if src and row.get("source_id", "") != src:
-                    continue
-                if res and row.get("ressort", "") != res:
-                    continue
-            out.append(_project(kind, row, len(out) + 1, score))
-            if len(out) >= k:
+    # Year filter on a numpy array. A range that matches nothing returns at once.
+    yrs = st["years"]
+    mask = np.ones(len(yrs), dtype=bool)
+    if ys is not None:
+        mask &= yrs >= ys
+    if ye is not None:
+        mask &= yrs <= ye
+    if not mask.any():
+        return reply([], embed_ms)
+    filtered = ys is not None or ye is not None
+    sel_ids = np.flatnonzero(mask)
+    if filtered and len(sel_ids) < 0.5 * len(yrs) and hasattr(faiss, "SearchParameters"):
+        # A narrow filter: search exactly among the matching rows in one pass. Widening an unfiltered
+        # search until enough rows match would take many passes for a single year.
+        params = faiss.SearchParameters()
+        params.sel = faiss.IDSelectorBatch(sel_ids.astype("int64"))
+        scores, ids = st["index"].search(qv, k, params=params)
+        scores, ids = scores[0], ids[0]
+        keep = ids >= 0
+    else:
+        search_k = min(nt, k * 10 if filtered else k)
+        while True:
+            scores, ids = st["index"].search(qv, search_k)
+            scores, ids = scores[0], ids[0]
+            ok = ids >= 0
+            scores, ids = scores[ok], ids[ok]
+            keep = mask[ids]
+            if keep.sum() >= k or search_k >= nt:
                 break
-        if len(out) >= k or search_k >= nt or st["type"] == "hnswlib":
-            break  # hnswlib is ef-capped, so no escalation pass
-        search_k = min(nt, search_k * 4)
-    return {"results": out, "took_ms": int((time.time() - t0) * 1000), "embed_ms": embed_ms,
-            "query": q, "total": len(out), "corpus": cid, "kind": kind}
+            search_k = min(nt, search_k * 4)
+    scores, ids = scores[keep][:k], ids[keep][:k]
+    return reply([_project(df.iloc[int(i)], r + 1, float(s)) for r, (s, i) in enumerate(zip(scores, ids))], embed_ms)
 
 
-# Optionally serve the built React UI at / (same-origin, so the frontend's "/api" works
-# with no CORS/proxy). Mounted last, after the /api routes, so those take precedence.
+# Optionally serve the built React UI at / (same origin, so the frontend's "/api" works with no CORS or
+# proxy). Mounted last, after the /api routes, so those take precedence.
 _UI_DIR = os.environ.get("PARLIAMENT_UI_DIR", "").strip()
 if _UI_DIR and Path(_UI_DIR).is_dir():
     from fastapi.staticfiles import StaticFiles
