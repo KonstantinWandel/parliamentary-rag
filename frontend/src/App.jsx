@@ -12,22 +12,17 @@ const UI = {
   tagline: 'Semantische Suche in Reden des Deutschen Bundestags',
   placeholder: 'z. B. Deutsche Wiedervereinigung, Klimapolitik, Rente …',
   examples: ['Deutsche Wiedervereinigung', 'Klimawandel und Energiepolitik', 'Rente mit 63', 'Zuwanderung und Asyl'],
+  // Shown only while the server can generate answers; a click runs the question with the answer switched on.
+  questions: [
+    'Wie wurde im Bundestag über den Mindestlohn argumentiert?',
+    'Welche Argumente gab es für und gegen den Atomausstieg?',
+    'Wie haben Rednerinnen und Redner die Wiedervereinigung bewertet?',
+    'Wie wurde die Einführung des Euro begründet?',
+  ],
   model: 'jina-embeddings-v4',
   // Credit and licence of the corpus, shown in the footer and on every exported PDF. The prepared
   // GermaParl corpus is published under CLARIN PUB+BY+NC+SA (github.com/PolMine/GermaParlTEI).
   source: 'GermaParl (PolMine, Blätte et al.), Lizenz CLARIN PUB+BY+NC+SA.',
-}
-
-// An empty year field shows its limit as a placeholder (1949, 2025), but the browser treats it as
-// having no value and sent the first arrow press somewhere else: from the shown 2025, "bis" jumped
-// to 1949. The shown limit is used as the starting value instead, so one press moves from it by
-// one year, and the result stays inside the corpus years.
-function stepFromPlaceholder(e, value, setValue, start, lo, hi) {
-  if (value !== '' || start == null || lo == null || hi == null) return
-  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
-  e.preventDefault()
-  const next = start + (e.key === 'ArrowUp' ? 1 : -1)
-  setValue(String(Math.min(hi, Math.max(lo, next))))
 }
 
 // One speech, one PDF. jsPDF's built-in Helvetica only covers Latin-1 and silently drops other
@@ -203,16 +198,17 @@ function highlight(text, query) {
   })
 }
 
-function ResultCard({ row, query, picked, onPick }) {
+function ResultCard({ row, query, picked, onPick, id, numbered }) {
   const [open, setOpen] = useState(false)
   const long = row.text.length > 520
   const shown = open || !long ? row.text : row.text.slice(0, 520).trimEnd() + '…'
   const st = row.party ? partyStyle(row.party) : null
   return (
-    <article className={picked ? 'card is-picked' : 'card'}>
+    <article id={id} className={picked ? 'card is-picked' : 'card'}>
       <div className="card-head">
         <input type="checkbox" className="pick" checked={picked} onChange={onPick}
                aria-label={`Rede von ${row.speaker || 'unbekannt'} vom ${row.date} auswählen`} />
+        {numbered && <span className="rank" title="Nummer, mit der die Antwort diese Rede zitiert">[{row.rank}]</span>}
         <span className="speaker">{row.speaker || 'Unbekannt'}</span>
         {st && <span className="party" style={{ color: st.fg, background: st.bg }}>{row.party}</span>}
         <span className="spacer" />
@@ -229,6 +225,29 @@ function ResultCard({ row, query, picked, onPick }) {
   )
 }
 
+// The model cites sources as [n]. Each reference becomes a button that scrolls to that result card.
+// The text is rendered as plain text nodes, never as HTML.
+function AnswerText({ text }) {
+  const jump = (n) => {
+    const el = document.getElementById(`src-${n}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('flash')
+    setTimeout(() => el.classList.remove('flash'), 1600)
+  }
+  return text.split(/\n{2,}/).map((para, pi) => (
+    <p key={pi}>
+      {para.split(/(\[\d{1,2}\])/).map((part, i) => {
+        const m = /^\[(\d{1,2})\]$/.exec(part)
+        return m
+          ? <button key={i} type="button" className="cite-ref" onClick={() => jump(m[1])}
+                    aria-label={`Zu Quelle ${m[1]}`}>{m[1]}</button>
+          : <span key={i}>{part}</span>
+      })}
+    </p>
+  ))
+}
+
 export default function App() {
   const [meta, setMeta] = useState(null)
   const [query, setQuery] = useState('')
@@ -242,7 +261,11 @@ export default function App() {
   const [error, setError] = useState(null)
   const [picked, setPicked] = useState({})
   const [exporting, setExporting] = useState(false)
+  const [answerOK, setAnswerOK] = useState(false)      // the server can generate answers right now
+  const [withAnswer, setWithAnswer] = useState(false)
+  const [answer, setAnswer] = useState(null)           // null = none, else { text, state: 'streaming' | 'done' | 'error', error }
   const inputRef = useRef(null)
+  const abortRef = useRef(null)     // the request in flight, so Zurücksetzen can stop it
 
   useEffect(() => {
     document.title = UI.title
@@ -250,11 +273,22 @@ export default function App() {
     fetch(`${API}/meta`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then(setMeta).catch(() => {})
+    fetch(`${API}/health`).then((r) => (r.ok ? r.json() : null)).then((h) => setAnswerOK(Boolean(h && h.answer))).catch(() => {})
   }, [])
+
+  // The year fields start with the real limits (1949 and 2025). A browser steps an EMPTY number field from 0 and
+  // clamps it to the minimum, so with only a placeholder both arrow buttons jumped to 1949.
+  useEffect(() => {
+    if (!meta) return
+    setYearFrom((v) => v || String(meta.min_year))
+    setYearTo((v) => v || String(meta.max_year))
+  }, [meta])
+  const yearParam = (v, limit) => (v && Number(v) !== limit ? Number(v) : null)   // the full range needs no filter
+  const yearsNarrowed = meta ? yearParam(yearFrom, meta.min_year) !== null || yearParam(yearTo, meta.max_year) !== null : false
 
   const yearHint = meta ? `${meta.min_year}–${meta.max_year}` : ''
 
-  async function runSearch(e, overrideQ) {
+  async function runSearch(e, overrideQ, forceAnswer) {
     if (e) e.preventDefault()
     const q = (overrideQ != null ? overrideQ : query).trim()
     if (!q || loading) return
@@ -262,14 +296,18 @@ export default function App() {
       setError('Das Startjahr liegt nach dem Endjahr. Bitte den Zeitraum anpassen.'); return
     }
     setLoading(true); setError(null)
+    abortRef.current?.abort()
+    const ac = new AbortController(); abortRef.current = ac
+    if ((forceAnswer || withAnswer) && answerOK) { await runAnswer(q, ac); return }
+    setAnswer(null)
     try {
       const res = await fetch(`${API}/search`, {
-        method: 'POST',
+        method: 'POST', signal: ac.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: q, top_k: Number(topK) || 10,
-          year_start: yearFrom ? Number(yearFrom) : null,
-          year_end: yearTo ? Number(yearTo) : null,
+          year_start: yearParam(yearFrom, meta?.min_year),
+          year_end: yearParam(yearTo, meta?.max_year),
         }),
       })
       if (!res.ok) {
@@ -280,11 +318,79 @@ export default function App() {
       const data = await res.json()
       setResults(data.results); setTook(data.took_ms); setAsked(q); setPicked({})
     } catch (err) {
+      if (err.name === 'AbortError') return
       // fetch() rejects with a bare TypeError ("Failed to fetch") when the server cannot be reached.
       setError(err instanceof TypeError ? 'Der Server ist momentan nicht erreichbar. Bitte gleich erneut versuchen.' : (err.message || 'Unbekannter Fehler'))
       setResults(null)
     } finally {
-      setLoading(false)
+      if (abortRef.current === ac) setLoading(false)
+    }
+  }
+
+  // Clears the current question, answer and results, and stops a request that is still running.
+  function resetAll() {
+    abortRef.current?.abort(); abortRef.current = null
+    setQuery(''); setResults(null); setAnswer(null); setError(null)
+    setPicked({}); setAsked(''); setLoading(false)
+    inputRef.current?.focus()
+  }
+
+  // Search plus generated answer. The server streams server-sent events: first the sources (the same
+  // cards as an ordinary search, numbered as the answer cites them), then the answer text token by token.
+  async function runAnswer(q, ac) {
+    const t0 = performance.now()
+    setAnswer({ text: '', state: 'streaming', error: null })
+    try {
+      const res = await fetch(`${API}/answer`, {
+        method: 'POST', signal: ac.signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: q, top_k: Math.min(Number(topK) || 10, 50),
+          year_start: yearParam(yearFrom, meta?.min_year),
+          year_end: yearParam(yearTo, meta?.max_year),
+        }),
+      })
+      if (!res.ok) {
+        let msg = `Antwort fehlgeschlagen (${res.status})`
+        try { const j = await res.json(); if (j && typeof j.detail === 'string') msg = j.detail } catch { /* keep default */ }
+        throw new Error(msg)
+      }
+      if (!(res.headers.get('content-type') || '').includes('text/event-stream')) {
+        const j = await res.json()
+        setResults(j.results || []); setAsked(q); setPicked({}); setAnswer(null)
+        if (j.message) setError(j.message)
+        return
+      }
+      const reader = res.body.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        let cut
+        while ((cut = buf.indexOf('\n\n')) >= 0) {
+          const line = buf.slice(0, cut).trim(); buf = buf.slice(cut + 2)
+          if (!line.startsWith('data:')) continue
+          let ev; try { ev = JSON.parse(line.slice(5)) } catch { continue }
+          if (ev.type === 'sources') {
+            setResults(ev.results); setAsked(q); setPicked({}); setTook(Math.round(performance.now() - t0))
+          } else if (ev.type === 'token') {
+            setAnswer((a) => ({ ...a, text: a.text + ev.text }))
+          } else if (ev.type === 'error') {
+            setAnswer((a) => ({ ...a, state: 'error', error: ev.message }))
+          } else if (ev.type === 'done') {
+            setAnswer((a) => ({ ...a, state: a.state === 'error' ? 'error' : 'done' }))
+          }
+        }
+      }
+      setAnswer((a) => (a && a.state === 'streaming' ? { ...a, state: 'done' } : a))
+    } catch (err) {
+      if (err.name === 'AbortError') return
+      setError(err instanceof TypeError ? 'Der Server ist momentan nicht erreichbar. Bitte gleich erneut versuchen.' : (err.message || 'Unbekannter Fehler'))
+      setAnswer(null)
+    } finally {
+      if (abortRef.current === ac) setLoading(false)
     }
   }
 
@@ -338,26 +444,37 @@ export default function App() {
               placeholder={UI.placeholder} onChange={(e) => setQuery(e.target.value)}
             />
             <button type="submit" disabled={loading || !query.trim()}>{loading ? 'Suche…' : 'Suchen'}</button>
+            {(query || results !== null || answer || error) && (
+              <button type="button" className="ghost" onClick={resetAll}
+                      title="Frage, Antwort und Treffer löschen">Zurücksetzen</button>
+            )}
           </div>
           <div className="controls">
             <span className="ctl">
               <label htmlFor="year-from">Jahr von</label>
               <input id="year-from" type="number" inputMode="numeric" value={yearFrom} placeholder={meta?.min_year ?? ''}
                      min={meta?.min_year} max={meta?.max_year} onChange={(e) => setYearFrom(e.target.value)}
-                     onKeyDown={(e) => stepFromPlaceholder(e, yearFrom, setYearFrom, meta?.min_year, meta?.min_year, meta?.max_year)} />
+                     onBlur={() => { if (!yearFrom && meta) setYearFrom(String(meta.min_year)) }} />
             </span>
             <span className="ctl">
               <label htmlFor="year-to">bis</label>
               <input id="year-to" type="number" inputMode="numeric" value={yearTo} placeholder={meta?.max_year ?? ''}
                      min={meta?.min_year} max={meta?.max_year} onChange={(e) => setYearTo(e.target.value)}
-                     onKeyDown={(e) => stepFromPlaceholder(e, yearTo, setYearTo, meta?.max_year, meta?.min_year, meta?.max_year)} />
+                     onBlur={() => { if (!yearTo && meta) setYearTo(String(meta.max_year)) }} />
             </span>
             <span className="ctl">
               <label htmlFor="top-k">Treffer</label>
-              <select id="top-k" value={topK} onChange={(e) => setTopK(e.target.value)}>
+              <select id="top-k" value={topK} onChange={(e) => setTopK(e.target.value)}
+                      title={withAnswer && answerOK ? 'So viele Reden fasst das Sprachmodell zusammen; bei vielen Reden sind die Auszüge kürzer' : undefined}>
                 {[5, 10, 20, 30, 50].map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             </span>
+            {answerOK && (
+              <label className="ctl answer-toggle" title="Ein Sprachmodell fasst die ähnlichsten Reden zusammen und belegt die Aussagen mit Quellenverweisen">
+                <input type="checkbox" checked={withAnswer} onChange={(e) => setWithAnswer(e.target.checked)} />
+                Antwort des Sprachmodells
+              </label>
+            )}
           </div>
           {results === null && !loading && (
             <p className="hint">
@@ -368,16 +485,38 @@ export default function App() {
               ))}
             </p>
           )}
+          {results === null && !loading && answerOK && (
+            <p className="hint">
+              Fragen an das Sprachmodell:{' '}
+              {UI.questions.map((qu) => (
+                <button type="button" key={qu} className="chip"
+                        onClick={() => { setQuery(qu); setWithAnswer(true); runSearch(null, qu, true) }}>{qu}</button>
+              ))}
+            </p>
+          )}
         </form>
 
         {error && <div className="notice error" role="alert">{error}</div>}
+
+        {answer && (
+          <section className="answer" aria-live="polite" aria-busy={answer.state === 'streaming'}>
+            <h2>Antwort <span className="tag">maschinell erzeugt</span></h2>
+            {answer.text ? <AnswerText text={answer.text} /> : <p className="muted">Das Sprachmodell liest die Reden …</p>}
+            {answer.state === 'error' && <p className="notice error">{answer.error || 'Die Antwort konnte nicht erzeugt werden.'}</p>}
+            {answer.state !== 'streaming' && (
+              <p className="answer-note">
+                Das Modell fasst nur die unten stehenden Redeauszüge zusammen und kann sich irren. Aussagen bitte an den Quellen prüfen.
+              </p>
+            )}
+          </section>
+        )}
 
         {results !== null && (
           <section className="results">
             <p className="rmeta" aria-live="polite">
               {results.length > 0
                 ? <>{results.length} Reden zu „{asked}“, nach semantischer Ähnlichkeit sortiert · {took} ms</>
-                : <>Keine Treffer für „{asked}“{(yearFrom || yearTo) ? ' im gewählten Zeitraum' : ''}.</>}
+                : <>Keine Treffer für „{asked}“{yearsNarrowed ? ' im gewählten Zeitraum' : ''}.</>}
             </p>
             {results.length > 0 && (
               <div className="picktools">
@@ -411,7 +550,7 @@ export default function App() {
               </div>
             )}
             {results.map((row, i) => (
-              <ResultCard key={`${asked}-${row.date}-${i}`} row={row} query={asked}
+              <ResultCard key={`${asked}-${row.date}-${i}`} id={`src-${row.rank}`} numbered={Boolean(answer)} row={row} query={asked}
                           picked={Boolean(picked[i])}
                           onPick={() => setPicked((c) => ({ ...c, [i]: !c[i] }))} />
             ))}
@@ -419,10 +558,50 @@ export default function App() {
         )}
       </main>
 
+      <div className="wrap">
+        <aside className="disclaimer" aria-label="Hinweise zur Nutzung">
+          <p>
+            Unabhängiger Forschungsprototyp, keine offizielle Anwendung des PolMine-Projekts oder des Deutschen
+            Bundestags.{answerOK && ' Antworten des Sprachmodells sind maschinell erzeugt und können Fehler enthalten.'}
+          </p>
+          <details>
+            <summary>Hinweise zu Daten, Lizenz, Sprachmodell und Datenschutz</summary>
+            <ul>
+              <li>
+                <strong>Daten und Lizenz.</strong> Die Reden stammen aus GermaParl (PolMine, Blätte et al.) und geben den
+                Wortlaut der Plenarprotokolle wieder; maßgeblich bleibt das amtliche Protokoll. Die aufbereitete Fassung
+                steht unter CLARIN PUB+BY+NC+SA. Die Lizenz erlaubt nur nichtkommerzielle Nutzung, das gilt auch für
+                Texte aus den PDF-, TXT- und CSV-Downloads.
+              </li>
+              {answerOK && (
+                <li>
+                  <strong>Sprachmodell.</strong> Die Antworten erzeugt ein offenes Sprachmodell auf einem Server der
+                  Universität Bielefeld. Es erhält nur die Frage und Auszüge der angezeigten Reden, belegt seine
+                  Aussagen mit Quellennummern und ist als maschinell erzeugt gekennzeichnet. Aussagen bitte an den
+                  Quellen prüfen.
+                </li>
+              )}
+              <li>
+                <strong>Datenschutz.</strong> Die Seite setzt keine Cookies, speichert nichts im Browser und nutzt kein
+                Tracking. Suchtexte und Fragen werden nicht dauerhaft gespeichert und nicht protokolliert; für die
+                Nutzungsgrenzen merkt sich der Server die IP-Adresse kurz im Arbeitsspeicher. Der Webserver führt ein
+                Zugriffsprotokoll (IP-Adresse, Zeitpunkt, aufgerufene Adresse ohne Suchtext), das nur wenige Tage
+                aufbewahrt wird. Daneben speichert der Server pro Tag nur Summen (Seitenaufrufe, Suchen, Antworten und die
+                Zahl der verschiedenen Besucheradressen), ohne Adressen. Suchtexte werden auf einem Server der Universität verarbeitet; nur wenn dieser nicht
+                erreichbar ist, berechnet der externe Dienst Jina AI den Suchvektor. Allgemeine Angaben:{' '}
+                <a href="https://geolab.soz.uni-bielefeld.de/privacy.html" target="_blank" rel="noopener noreferrer">Datenschutzerklärung des GeoLAB</a>{' '}
+                (Verantwortlicher: Universität Bielefeld).
+              </li>
+            </ul>
+          </details>
+        </aside>
+      </div>
+
       <footer className="foot wrap">
         <p>
           Semantische Suche über rund {meta ? (Number(meta.count) / 1e6).toLocaleString('de-DE', { maximumFractionDigits: 2 }) : '…'} Millionen Reden.
-          Angezeigt werden die Originaltreffer, nach Ähnlichkeit sortiert; eine generierte Zusammenfassung gibt es nicht.
+          Angezeigt werden die Originaltreffer, nach Ähnlichkeit sortiert.
+          {answerOK ? ' Auf Wunsch fasst ein Sprachmodell die obersten Treffer zusammen; die Quellen stehen immer darunter.' : ' Eine generierte Zusammenfassung gibt es nicht.'}
         </p>
         <p className="src">Datenbasis: {UI.source} Embeddings: {UI.model}. Treffer stets an der Quelle prüfen.</p>
         <p className="cite">

@@ -1,0 +1,10 @@
+[Unit]
+Description=Plenarsuche daily totals, shortly after midnight
+
+[Timer]
+OnCalendar=*-*-* 00:35:00 Europe/Berlin
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

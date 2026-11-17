@@ -11,8 +11,9 @@ per speech.
 
 A public instance is running at <https://germaparl.geolab.soz.uni-bielefeld.de>.
 
-> Status: research prototype. The tool returns the original speeches ranked by similarity and generates no
-> summaries or answers. Please check hits against the official records before use.
+> Status: research prototype. The search returns the original speeches ranked by similarity. An optional
+> answer mode lets a language model summarise the most similar speeches with numbered source references;
+> it can be wrong, and hits and answers should be checked against the official records before use.
 
 ## How it works
 
@@ -32,6 +33,14 @@ A public instance is running at <https://germaparl.geolab.soz.uni-bielefeld.de>.
     needs no GPU and no torch, only `requirements-api.txt`.
   - `local` loads `jina-embeddings-v4` through `sentence-transformers` and needs the full
     `requirements.txt` and a machine with enough memory (about 8 GB for the weights alone).
+  - A third option is a small embedding service on a GPU machine, reached over an SSH tunnel
+    (`PARLIAMENT_EMBED_URL`, see `deploy/llm/`). It is tried first; if it does not answer, the backend above
+    takes over.
+- **Answers (optional):** with `PARLIAMENT_LLM_URL` set, the interface offers a switch that lets a language
+  model summarise the most similar speeches (as many as the visitor chooses, up to 50). The model sees the question and excerpts of those speeches
+  and nothing else, must cite them by number, and the sources are shown directly below the answer. The model
+  runs on a separate GPU machine behind a reverse tunnel (`deploy/llm/`), so the public host needs no GPU. If
+  the tunnel is down the switch disappears and the search keeps working.
 - **Results:** the ranked original passages. The interface is a React single-page application on top of a
   FastAPI service; a single-file Streamlit version is kept for offline use.
 
@@ -84,6 +93,12 @@ Environment variables of the backend (all optional except the key for the `api` 
 | `PARLIAMENT_MAX_QUERY_CHARS` | 500 | longest accepted query |
 | `PARLIAMENT_RATE_PER_MIN` | 30 | uncached searches per visitor and minute (held in memory) |
 | `PARLIAMENT_DAILY_EMBED_CAP` | 3000 | uncached searches per day across all visitors (0 switches the cap off) |
+| `PARLIAMENT_EMBED_URL` | unset | query-embedding service (`deploy/llm/embed_service.py`), tried before the backend above |
+| `PARLIAMENT_LLM_URL` | unset | OpenAI-compatible endpoint of the answer model, for example `http://127.0.0.1:18100/v1`; unset switches answers off |
+| `PARLIAMENT_LLM_KEY` | unset | key the endpoint requires (also used for the embedding service) |
+| `PARLIAMENT_ANSWER_PER_HOUR` | 12 | answers per visitor and hour |
+| `PARLIAMENT_ANSWER_DAILY_CAP` | 400 | answers per day across all visitors |
+| `PARLIAMENT_ANSWER_CONCURRENCY` | 2 | answers generated at the same time; a third request is refused politely |
 | `PARLIAMENT_CORS_ORIGINS` | the public address and local dev servers | origins allowed to call the API from a browser |
 
 The data are loaded when the service starts. A search that is repeated, or only changes the year filter,

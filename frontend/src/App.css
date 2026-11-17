@@ -155,3 +155,28 @@ body::before { content: ""; display: block; height: 4px; background: var(--accen
 @media (max-width: 640px) {
   .exports { margin-left: 0; }
 }
+
+/* Answer of the language model */
+.answer { margin: 1.2rem 0 1.4rem; padding: 1rem 1.2rem; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px; background: var(--surface); }
+.answer h2 { font-size: 1rem; margin: 0 0 .6rem; display: flex; align-items: center; gap: .6rem; }
+.answer .tag { font-size: .72rem; font-weight: 600; letter-spacing: .02em; color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: .05rem .5rem; }
+.answer p { margin: 0 0 .7rem; line-height: 1.6; }
+.answer .muted, .answer-note { color: var(--faint); font-size: .85rem; }
+.answer-note { margin: .4rem 0 0; }
+.cite-ref { font: inherit; font-size: .75rem; line-height: 1; padding: .12rem .35rem; margin: 0 .1rem; border: 1px solid var(--accent); border-radius: 4px; background: transparent; color: var(--accent); cursor: pointer; vertical-align: .12em; }
+.cite-ref:hover, .cite-ref:focus-visible { background: var(--accent); color: #fff; }
+.card.flash { animation: flash 1.6s ease-out; }
+@keyframes flash { 0% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+.answer-toggle { display: inline-flex; align-items: center; gap: .4rem; cursor: pointer; }
+
+.rank { font-size: .8rem; font-weight: 600; color: var(--accent); }
+
+/* Clear button and notice bar */
+.qrow button.ghost { color: var(--ink); background: transparent; border: 1px solid var(--border); }
+.qrow button.ghost:hover:not(:disabled) { background: var(--surface); border-color: var(--accent); color: var(--accent); }
+.disclaimer { margin: 1.6rem 0 0; padding: .7rem 1rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); font-size: .85rem; color: var(--muted); }
+.disclaimer p { margin: 0; }
+.disclaimer summary { margin-top: .4rem; cursor: pointer; color: var(--accent); font-weight: 600; }
+.disclaimer ul { margin: .6rem 0 0; padding-left: 1.1rem; }
+.disclaimer li { margin: 0 0 .5rem; line-height: 1.5; }
+.disclaimer a { color: var(--accent); }

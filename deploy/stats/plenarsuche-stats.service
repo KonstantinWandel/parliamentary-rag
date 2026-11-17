@@ -1,0 +1,13 @@
+[Unit]
+Description=Plenarsuche daily totals from the access log (no addresses kept)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/geolab/plenarsuche-stats/count_daily.py --cleanup
+StateDirectory=plenarsuche-stats
+StateDirectoryMode=0755
+ProtectSystem=strict
+ReadWritePaths=/var/log/caddy
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
